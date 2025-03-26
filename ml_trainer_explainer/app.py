@@ -14,21 +14,24 @@ from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
 from sklearn.preprocessing import LabelEncoder
 
-# Ensure directories exist
-os.makedirs("models", exist_ok=True)
-os.makedirs("data", exist_ok=True)
+# Ensure necessary directories exist on Streamlit Cloud
+if not os.path.exists("models"):
+    os.makedirs("models")
 
-# Function to save model along with feature names and label encoders
+# Function to save and load models (Handles Streamlit Cloud Persistence)
 def save_model(model, feature_names, label_encoders, filename):
-    with open(os.path.join("models", filename), 'wb') as f:
+    with open(filename, 'wb') as f:
         pickle.dump((model, feature_names, label_encoders), f)
 
-# Function to load model along with feature names and label encoders
 def load_model(filename):
-    with open(os.path.join("models", filename), 'rb') as f:
-        return pickle.load(f)  # Returns (model, feature_names, label_encoders)
+    if os.path.exists(filename):
+        with open(filename, 'rb') as f:
+            return pickle.load(f)
+    else:
+        st.warning("⚠️ Model file not found! Please train a model first.")
+        return None
 
-# Streamlit UI configuration
+# Streamlit UI setup
 st.set_page_config(page_title="ML Trainer & Explainer", layout="wide")
 st.sidebar.title("🔍 Navigation")
 page = st.sidebar.radio("Go to", ["🏠 Home", "📊 Train Models", "📂 Upload Data & Predict", "📈 Visualization & Explainability"], index=0)
@@ -48,23 +51,20 @@ if page == "🏠 Home":
 elif page == "📊 Train Models":
     st.title("Train Machine Learning Models 🎯")
 
-    data_option = st.radio("Select Data Source", ["Upload File", "Select from Data Folder"], key="data_source")
+    uploaded_file = st.file_uploader("📤 Upload a CSV file", type=["csv"])
     df = None  # Initialize df variable
 
-    if data_option == "Upload File":
-        uploaded_file = st.file_uploader("📤 Upload a CSV file", type=["csv"], key="train_upload")
-        if uploaded_file:
-            df = pd.read_csv(uploaded_file)
+    # If no file uploaded, use a hosted default dataset
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file)
     else:
-        csv_files = [f for f in os.listdir("data") if f.endswith(".csv")]
-        if csv_files:
-            selected_csv = st.selectbox("📂 Select a dataset", csv_files, key="data_select")
-            if selected_csv:
-                df = pd.read_csv(os.path.join("data", selected_csv))
+        default_csv_path = "https://raw.githubusercontent.com/yourusername/yourrepo/main/sample.csv"
+        df = pd.read_csv(default_csv_path)
+        st.info("ℹ️ No file uploaded. Using a sample dataset from GitHub.")
 
     if df is not None:
         st.write("### 📌 Dataset Preview", df.head())
-        target = st.selectbox("🎯 Select target column", df.columns, key="target_col")
+        target = st.selectbox("🎯 Select target column", df.columns)
 
         models = {
             "Logistic Regression": LogisticRegression(),
@@ -73,9 +73,9 @@ elif page == "📊 Train Models":
             "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='logloss', verbosity=0)
         }
 
-        selected_model = st.selectbox("🤖 Choose Model", list(models.keys()), key="model_select")
+        selected_model = st.selectbox("🤖 Choose Model", list(models.keys()))
 
-        if st.button("🚀 Train & Save Model", key="train_button"):
+        if st.button("🚀 Train & Save Model"):
             X = df.drop(columns=[target])
             y = df[target]
 
@@ -84,11 +84,12 @@ elif page == "📊 Train Models":
             for col in X.select_dtypes(include=['object']).columns:
                 le = LabelEncoder()
                 X[col] = le.fit_transform(X[col])
-                label_encoders[col] = le  # Store encoder for later use
+                label_encoders[col] = le
 
             X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42)
             model = models[selected_model]
             model.fit(X_train, y_train)
+
             filename = f"{selected_model.replace(' ', '_')}.pkl"
             save_model(model, list(X.columns), label_encoders, filename)
             st.success(f"✅ {selected_model} trained and saved as {filename}")
@@ -97,53 +98,69 @@ elif page == "📊 Train Models":
 elif page == "📂 Upload Data & Predict":
     st.title("Upload Data & Make Predictions 📌")
     model_files = [f for f in os.listdir("models") if f.endswith(".pkl")]
+
     if model_files:
-        selected_model_file = st.selectbox("📂 Select a trained model", model_files, key="model_file_select")
+        selected_model_file = st.selectbox("📂 Select a trained model", model_files)
     else:
         st.error("⚠️ No trained models found! Please train a model first.")
         st.stop()
 
-    csv_files = [f for f in os.listdir("data") if f.endswith(".csv")]
-    if csv_files:
-        selected_csv = st.selectbox("📂 Select a dataset for prediction", csv_files, key="data_select")
-    else:
-        st.error("⚠️ No datasets found! Please upload a dataset first.")
-        st.stop()
+    uploaded_file = st.file_uploader("📤 Upload a CSV file for prediction", type=["csv"])
+    df = None  # Initialize df variable
 
-    if selected_model_file and selected_csv:
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file)
+    else:
+        default_csv_path = "https://raw.githubusercontent.com/yourusername/yourrepo/main/sample.csv"
+        df = pd.read_csv(default_csv_path)
+        st.info("ℹ️ No file uploaded. Using a sample dataset from GitHub.")
+
+    if selected_model_file and df is not None:
         model, feature_names, label_encoders = load_model(selected_model_file)
-        data = pd.read_csv(os.path.join("data", selected_csv))
-        st.write("### 🔍 Selected Data Preview", data.head())
+        st.write("### 🔍 Selected Data Preview", df.head())
+
+        if model:
+            X = df[feature_names]
+
+            # Apply label encoders if needed
+            for col, le in label_encoders.items():
+                if col in X.columns:
+                    X[col] = le.transform(X[col])
+
+            predictions = model.predict(X)
+            st.write("### 📌 Predictions:", predictions)
 
 # Visualization & Explainability Page
 elif page == "📈 Visualization & Explainability":
     st.title("Model Explainability & Data Visualization 📊")
     model_files = [f for f in os.listdir("models") if f.endswith(".pkl")]
-    csv_files = [f for f in os.listdir("data") if f.endswith(".csv")]
 
     if model_files:
-        selected_model_file = st.selectbox("📂 Select a trained model", model_files, key="viz_model_select")
+        selected_model_file = st.selectbox("📂 Select a trained model", model_files)
     else:
         st.error("⚠️ No trained models found! Please train a model first.")
         st.stop()
 
-    if csv_files:
-        selected_csv = st.selectbox("📂 Select a dataset for visualization", csv_files, key="viz_data_select")
+    uploaded_file = st.file_uploader("📤 Upload a CSV file for visualization", type=["csv"])
+    df = None  # Initialize df variable
+
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file)
     else:
-        st.error("⚠️ No datasets found! Please upload a dataset first.")
-        st.stop()
+        default_csv_path = "https://raw.githubusercontent.com/yourusername/yourrepo/main/sample.csv"
+        df = pd.read_csv(default_csv_path)
+        st.info("ℹ️ No file uploaded. Using a sample dataset from GitHub.")
 
-    if selected_model_file and selected_csv:
+    if selected_model_file and df is not None:
         model, feature_names, label_encoders = load_model(selected_model_file)
-        data = pd.read_csv(os.path.join("data", selected_csv))
 
-        if st.button("📊 Generate Evidently Data Drift Report", key="evidently_button"):
-            reference_data = data.sample(frac=0.5, random_state=42)
-            current_data = data.drop(reference_data.index)
+        if st.button("📊 Generate Evidently Data Drift Report"):
+            reference_data = df.sample(frac=0.5, random_state=42)
+            current_data = df.drop(reference_data.index)
+
             drift_report = Report(metrics=[DataDriftPreset()])
             drift_report.run(reference_data=reference_data, current_data=current_data)
-            drift_report.save_html("evidently_report.html")
 
-            with open("evidently_report.html", "r", encoding="utf-8") as file:
-                html_content = file.read()
+            # Convert report into an HTML string
+            html_content = drift_report.get_html()
             st.components.v1.html(html_content, height=800, scrolling=True)
